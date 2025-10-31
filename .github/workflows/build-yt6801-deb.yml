@@ -1,45 +1,33 @@
-name: build-yt6801-deb
-
+name: build-yt6801-ko
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install build tools
+      - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential debhelper fakeroot rsync
+          sudo apt-get install -y build-essential git dkms curl
 
-      - name: Prepare debian package structure
+      - name: Install Proxmox headers (6.14.8-2-pve)
         run: |
-          set -euo pipefail
-          mkdir -p pkg/usr/src/yt6801
-          rsync -a --exclude ".git" --exclude ".github" ./ pkg/usr/src/yt6801/
-          mkdir -p pkg/DEBIAN
-          printf "%s\n" \
-            "Package: yt6801-source" \
-            "Version: 1.0" \
-            "Section: kernel" \
-            "Priority: optional" \
-            "Architecture: amd64" \
-            "Maintainer: Your Name <you@example.com>" \
-            "Description: YT6801 Ethernet driver (source only). Build the kernel module on the target with matching headers." \
-            > pkg/DEBIAN/control
+          curl -O http://download.proxmox.com/debian/pve/dists/trixie/pve-no-subscription/binary-amd64/pve-headers-6.14.8-2-pve_6.14.8-2_amd64.deb
+          sudo apt install -y ./pve-headers-6.14.8-2-pve_6.14.8-2_amd64.deb
 
-      - name: Build .deb
-        run: dpkg-deb --build pkg yt6801-source.deb
+      - name: Build yt6801 kernel module
+        run: |
+          cd src || cd .
+          make -C /lib/modules/6.14.8-2-pve/build M="$PWD" modules
+          mkdir -p build-output
+          find . -name "yt6801.ko" -exec cp {} build-output/ \;
 
-      - name: Upload artifact
+      - name: Upload built module
         uses: actions/upload-artifact@v4
         with:
-          name: yt6801-source-deb
-          path: yt6801-source.deb
+          name: yt6801-ko
+          path: build-output/yt6801.ko
