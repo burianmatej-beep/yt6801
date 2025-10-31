@@ -10,25 +10,26 @@ jobs:
       - name: Checkout yt6801 source
         uses: actions/checkout@v4
 
-      - name: Toolchain
+      - name: Install toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential git dkms ca-certificates curl
+          sudo apt-get install -y build-essential dkms git curl ca-certificates
 
-      - name: Get Proxmox headers (6.14.8-2-pve) without adding repos
+      - name: Install Proxmox headers (6.14.8-2-pve) from direct URLs
         run: |
           set -euxo pipefail
           KVER="6.14.8-2-pve"
           cd /tmp
-
-          # stáhni přesné .deb balíčky přímo z Proxmox poolu
+          # stáhni headery přímo – bez přidávání APT repozitářů
           curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/proxmox-headers-6.14_6.14.8-2_all.deb"
-          curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/pve-headers_${KVER}_6.14.8-2_amd64.deb"
+          # název pve-headers .deb se může lišit – vyzkoušíme obě běžné varianty
+          curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/pve-headers_${KVER}_6.14.8-2_amd64.deb" \
+          || curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/linux-headers-${KVER}_6.14.8-2_amd64.deb"
 
-          # nainstaluj je lokálně (bez apt repo)
-          sudo dpkg -i proxmox-headers-6.14_6.14.8-2_all.deb pve-headers_${KVER}_6.14.8-2_amd64.deb
+          # nainstaluj lokálně
+          sudo dpkg -i /tmp/proxmox-headers-6.14_6.14.8-2_all.deb /tmp/*headers*${KVER}*_amd64.deb
 
-          # vytvoř build symlink pro kernel
+          # zajisti symlink /lib/modules/${KVER}/build
           sudo mkdir -p "/lib/modules/${KVER}"
           if [ ! -e "/lib/modules/${KVER}/build" ]; then
             sudo ln -s "/usr/src/linux-headers-${KVER}" "/lib/modules/${KVER}/build"
@@ -39,7 +40,7 @@ jobs:
         run: |
           set -euxo pipefail
           KVER="6.14.8-2-pve"
-          cd src || cd .
+          cd src || true
           make -C "/lib/modules/${KVER}/build" M="$PWD" clean modules
           mkdir -p build-output
           cp -v yt6801.ko build-output/
