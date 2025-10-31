@@ -10,26 +10,22 @@ jobs:
       - name: Checkout yt6801 source
         uses: actions/checkout@v4
 
-      - name: Install toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential dkms git curl ca-certificates
-
-      - name: Install Proxmox headers (6.14.8-2-pve) from direct URLs
+      # ŽÁDNÉ apt-get update / žádné zdroje! Jen dpkg z lokálních .deb
+      - name: Install Proxmox headers 6.14.8-2-pve (no APT)
         run: |
           set -euxo pipefail
           KVER="6.14.8-2-pve"
           cd /tmp
-          # stáhni headery přímo – bez přidávání APT repozitářů
+          # stáhni přesné headery pro 6.14.8-2
           curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/proxmox-headers-6.14_6.14.8-2_all.deb"
-          # název pve-headers .deb se může lišit – vyzkoušíme obě běžné varianty
+          # druhý balík má různé názvy; zkus varianty
           curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/pve-headers_${KVER}_6.14.8-2_amd64.deb" \
           || curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/linux-headers-${KVER}_6.14.8-2_amd64.deb"
 
-          # nainstaluj lokálně
+          # nainstaluj lokálně (bez apt)
           sudo dpkg -i /tmp/proxmox-headers-6.14_6.14.8-2_all.deb /tmp/*headers*${KVER}*_amd64.deb
 
-          # zajisti symlink /lib/modules/${KVER}/build
+          # symlink pro build systém
           sudo mkdir -p "/lib/modules/${KVER}"
           if [ ! -e "/lib/modules/${KVER}/build" ]; then
             sudo ln -s "/usr/src/linux-headers-${KVER}" "/lib/modules/${KVER}/build"
@@ -40,7 +36,7 @@ jobs:
         run: |
           set -euxo pipefail
           KVER="6.14.8-2-pve"
-          cd src || true
+          cd src
           make -C "/lib/modules/${KVER}/build" M="$PWD" clean modules
           mkdir -p build-output
           cp -v yt6801.ko build-output/
