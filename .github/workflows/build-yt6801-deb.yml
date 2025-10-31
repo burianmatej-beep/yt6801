@@ -3,53 +3,44 @@ name: build yt6801 .deb
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
-  workflow_call: {}
+    branches: ["main", "master"]
 
 jobs:
   build-deb:
     runs-on: ubuntu-latest
-    env:
-      DEB_PACKAGE_NAME: yt6801-driver
-      KERNEL_VERSIONS: "6.14.8-2-pve 6.14.11-4-pve 6.12.43+deb13-amd64"
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-    - name: Install build deps
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y build-essential dkms debhelper dh-make fakeroot git
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential debhelper fakeroot rsync
 
-    # VOLITELNÉ: pokud máš konkrétní proxmox header package URL, můžeš ho sem stáhnout.
-    # Nechávám volné, aby stroj zkusil dostupné linux-headers; pokud to selže, bude potřeba
-    # nahrát headers do repozitáře nebo přidat dalších krok pro stažení proxmox headers.
-
-    - name: Prepare deb structure
-      run: |
-        mkdir -p package/usr/src/yt6801
-        cp -r ./* package/usr/src/yt6801
-        pushd package
-        mkdir -p DEBIAN
-        cat > DEBIAN/control <<'EOF'
-Package: ${DEB_PACKAGE_NAME}
+      - name: Prepare deb structure
+        run: |
+          set -e
+          mkdir -p pkg/usr/src/yt6801
+          rsync -a --exclude ".git" --exclude ".github" ./ pkg/usr/src/yt6801/
+          mkdir -p pkg/DEBIAN
+          cat > pkg/DEBIAN/control <<'EOF'
+Package: yt6801-source
 Version: 1.0
 Section: kernel
 Priority: optional
 Architecture: amd64
-Maintainer: You <you@example.com>
-Description: yt6801 kernel driver (source packaged). Build and install module for target kernel.
+Maintainer: Your Name <you@example.com>
+Description: YT6801 Ethernet driver (source only). Build the kernel module on the target with matching headers.
 EOF
-        popd
 
-    - name: Build .deb (source-only; module build done on target)
-      run: |
-        dpkg-deb --build package
-        mv package.deb yt6801-source-package.deb || true
-        ls -lh
+      - name: Build .deb
+        run: |
+          dpkg-deb --build pkg yt6801-source.deb
+          ls -lh yt6801-source.deb
 
-    - name: Upload artifact (.deb)
-      uses: actions/upload-artifact@v4
-      with:
-        name: yt6801-source-deb
-        path: yt6801-source-package.deb
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yt6801-source-deb
+          path: yt6801-source.deb
