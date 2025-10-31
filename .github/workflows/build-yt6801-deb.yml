@@ -1,0 +1,83 @@
+name: Build YT6801 driver .deb for Proxmox 9 (6.14.8-2-pve)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup apt & Proxmox repo
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates curl gnupg lsb-release
+          echo "deb http://deb.debian.org/debian trixie main contrib non-free-firmware" | sudo tee /etc/apt/sources.list.d/trixie.list
+          echo "deb http://security.debian.org/debian-security trixie-security main non-free-firmware" | sudo tee /etc/apt/sources.list.d/trixie-security.list
+          echo "deb http://deb.debian.org/debian trixie-updates main non-free-firmware" | sudo tee /etc/apt/sources.list.d/trixie-updates.list
+          echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" | sudo tee /etc/apt/sources.list.d/pve.list
+          sudo apt-get update
+
+      - name: Install build deps & headers
+        run: |
+          sudo apt-get install -y build-essential make git dpkg-dev xz-utils \
+                                   proxmox-headers-6.14.8-2-pve
+          ls -l /usr/src/linux-headers-6.14.8-2-pve || (echo "Missing headers" && exit 1)
+
+      - name: Build kernel module
+        working-directory: ./src
+        env:
+          KVER: 6.14.8-2-pve
+          KDIR: /usr/src/linux-headers-6.14.8-2-pve
+        run: |
+          make -C "$KDIR" M="$PWD" clean modules
+          ls -lh yt6801.ko
+
+      - name: Package .deb
+        working-directory: .
+        env:
+          KVER: 6.14.8-2-pve
+        run: |
+          mkdir -p pkg/DEBIAN
+          mkdir -p "pkg/lib/modules/$KVER/updates"
+          cp -v src/yt6801.ko "pkg/lib/modules/$KVER/updates/"
+
+          cat > pkg/DEBIAN/control <<EOF
+          Package: yt6801-driver
+          Version: $KVER
+          Section: kernel
+          Priority: optional
+          Architecture: amd64
+          Maintainer: $GITHUB_REPOSITORY
+          Description: Motorcomm YT6801 network driver for Proxmox VE 9 ($KVER)
+          EOF
+
+          cat > pkg/DEBIAN/postinst <<'EOF'
+          #!/bin/sh
+          set -e
+          KVER="6.14.8-2-pve"
+          /sbin/depmod -a "$KVER" || true
+          grep -qxF yt6801 /etc/modules 2>/dev/null || echo yt6801 >> /etc/modules
+          modprobe yt6801 2>/dev/null || true
+          exit 0
+          EOF
+          chmod 0755 pkg/DEBIAN/postinst
+
+          cat > pkg/DEBIAN/prerm <<'EOF'
+          #!/bin/sh
+          set -e
+          modprobe -r yt6801 2>/dev/null || true
+          exit 0
+          EOF
+          chmod 0755 pkg/DEBIAN/prerm
+
+          dpkg-deb --build pkg "yt6801-driver_${KVER}_amd64.deb"
+          ls -lh "yt6801-driver_${KVER}_amd64.deb"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yt6801-driver_6.14.8-2-pve_amd64
+          path: ./yt6801-driver_6.14.8-2-pve_amd64.deb
