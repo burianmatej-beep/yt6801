@@ -11,7 +11,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Běží uvnitř Debianu 13 (trixie), aby šly použít Debian/Proxmox repa
     container:
       image: debian:trixie
 
@@ -19,16 +18,13 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
 
     steps:
-      - name: Checkout repository (your fork of silent-reader-cn/yt6801)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set KVER from workflow input
+      - name: Set KVER
         run: echo "KVER=${{ github.event.inputs.kernel_version }}" >> $GITHUB_ENV
 
-      - name: Show chosen kernel version
-        run: echo "Building for KVER=${KVER}"
-
-      - name: Install base tools and import Proxmox apt key
+      - name: Base tools + Proxmox APT key & repo
         run: |
           set -eux
           apt-get update
@@ -45,30 +41,27 @@ jobs:
 
           apt-get update
 
-      - name: Install Proxmox kernel headers for ${{ env.KVER }}
+      - name: Install Proxmox headers for ${KVER}
         run: |
           set -eux
           apt-get install -y --no-install-recommends "proxmox-headers-${KVER}"
           ls -ld "/usr/src/linux-headers-${KVER}"
 
-      - name: Build yt6801 kernel module against Proxmox headers
+      - name: Build yt6801.ko against ${KVER}
         working-directory: ./src
         run: |
           set -eux
           make -C "/usr/src/linux-headers-${KVER}" M="$PWD" clean modules
           ls -lh yt6801.ko
 
-      - name: Package .deb (yt6801-driver_${{ env.KVER }}.deb)
+      - name: Package DEB
         working-directory: .
         run: |
           set -eux
           PKGDIR=pkg
           install -d "${PKGDIR}/DEBIAN" "${PKGDIR}/lib/modules/${KVER}/updates"
-
-          # Zkopíruj zbuildovaný modul
           install -m 0644 "src/yt6801.ko" "${PKGDIR}/lib/modules/${KVER}/updates/yt6801.ko"
 
-          # DEBIAN/control
           cat > "${PKGDIR}/DEBIAN/control" <<EOF
           Package: yt6801-driver
           Version: ${KVER}
@@ -76,46 +69,26 @@ jobs:
           Priority: optional
           Architecture: amd64
           Maintainer: ${GITHUB_REPOSITORY}
-          Description: YT6801 (Fuxi GMAC) Ethernet driver module for Proxmox kernel ${KVER}
+          Description: YT6801 Ethernet driver module for Proxmox kernel ${KVER}
           Depends:
           EOF
 
-          # Postinst: zaregistruj modul a přegeneruj moduly
           cat > "${PKGDIR}/DEBIAN/postinst" <<'EOF'
           #!/bin/sh
           set -e
-          KVER="$(dpkg-deb --info "$0" 2>/dev/null | sed -n 's/^ Version: //p')"
-          # Pokud dpkg-deb není k dispozici v tomto kontextu, použij uložený název balíčku:
-          if [ -z "$KVER" ]; then KVER="$(basename "$(dpkg -s yt6801-driver 2>/dev/null | sed -n 's/^Version: //p')")"; fi
-          # Fallback: pokud by to selhalo, vytáhni ze skutečné cesty instalace:
-          [ -z "$KVER" ] && KVER="$(ls -1 /lib/modules | grep pve | sort -V | tail -n1)"
-
-          # Zapiš modul do /etc/modules, pokud tam není
-          if ! grep -q '^yt6801$' /etc/modules 2>/dev/null; then
-            echo yt6801 >> /etc/modules
-          fi
-
-          # Přegeneruj moduly pro běžící jádro i cílové KVER
+          # Zapiš modul pro autoload
+          grep -qxF yt6801 /etc/modules 2>/dev/null || echo yt6801 >> /etc/modules
+          # Přegeneruj moduly (pro běžící i cílové KVER, pokud je k dispozici)
           depmod -a || true
-          [ -n "$KVER" ] && depmod -a "$KVER" || true
-
+          for k in /lib/modules/*-pve; do depmod -a "$(basename "$k")" || true; done
           exit 0
           EOF
           chmod 0755 "${PKGDIR}/DEBIAN/postinst"
 
-          # Postrm: úklid
-          cat > "${PKGDIR}/DEBIAN/postrm" <<'EOF'
-          #!/bin/sh
-          set -e
-          # necháme /etc/modules s yt6801, aby po případné reinstalaci zůstal
-          exit 0
-          EOF
-          chmod 0755 "${PKGDIR}/DEBIAN/postrm"
-
           dpkg-deb --build "${PKGDIR}" "yt6801-driver_${KVER}.deb"
           ls -lh "yt6801-driver_${KVER}.deb"
 
-      - name: Upload artifact (.deb)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: yt6801-driver_${{ env.KVER }}
