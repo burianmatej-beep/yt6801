@@ -1,83 +1,123 @@
-name: Build YT6801 driver .deb for Proxmox 9 (6.14.8-2-pve)
+name: Build yt6801 .deb (Proxmox 9 / trixie)
 
 on:
   workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: "Proxmox kernel version (e.g. 6.14.8-2-pve)"
+        required: true
+        default: "6.14.8-2-pve"
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Běží uvnitř Debianu 13 (trixie), aby šly použít Debian/Proxmox repa
+    container:
+      image: debian:trixie
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
     steps:
-      - name: Checkout
+      - name: Checkout repository (your fork of silent-reader-cn/yt6801)
         uses: actions/checkout@v4
 
-      - name: Setup apt & Proxmox repo
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ca-certificates curl gnupg lsb-release
-          echo "deb http://deb.debian.org/debian trixie main contrib non-free-firmware" | sudo tee /etc/apt/sources.list.d/trixie.list
-          echo "deb http://security.debian.org/debian-security trixie-security main non-free-firmware" | sudo tee /etc/apt/sources.list.d/trixie-security.list
-          echo "deb http://deb.debian.org/debian trixie-updates main non-free-firmware" | sudo tee /etc/apt/sources.list.d/trixie-updates.list
-          echo "deb http://download.proxmox.com/debian/pve trixie pve-no-subscription" | sudo tee /etc/apt/sources.list.d/pve.list
-          sudo apt-get update
+      - name: Set KVER from workflow input
+        run: echo "KVER=${{ github.event.inputs.kernel_version }}" >> $GITHUB_ENV
 
-      - name: Install build deps & headers
-        run: |
-          sudo apt-get install -y build-essential make git dpkg-dev xz-utils \
-                                   proxmox-headers-6.14.8-2-pve
-          ls -l /usr/src/linux-headers-6.14.8-2-pve || (echo "Missing headers" && exit 1)
+      - name: Show chosen kernel version
+        run: echo "Building for KVER=${KVER}"
 
-      - name: Build kernel module
+      - name: Install base tools and import Proxmox apt key
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl gnupg lsb-release \
+            build-essential make git kmod bc xz-utils dpkg-dev fakeroot
+
+          install -d -m 0755 /etc/apt/keyrings
+          curl -fsSL https://enterprise.proxmox.com/debian/proxmox-release-trixie.gpg \
+            | gpg --dearmor > /etc/apt/keyrings/proxmox-release.gpg
+
+          echo "deb [signed-by=/etc/apt/keyrings/proxmox-release.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription" \
+            > /etc/apt/sources.list.d/proxmox-trixie.list
+
+          apt-get update
+
+      - name: Install Proxmox kernel headers for ${{ env.KVER }}
+        run: |
+          set -eux
+          apt-get install -y --no-install-recommends "proxmox-headers-${KVER}"
+          ls -ld "/usr/src/linux-headers-${KVER}"
+
+      - name: Build yt6801 kernel module against Proxmox headers
         working-directory: ./src
-        env:
-          KVER: 6.14.8-2-pve
-          KDIR: /usr/src/linux-headers-6.14.8-2-pve
         run: |
-          make -C "$KDIR" M="$PWD" clean modules
+          set -eux
+          make -C "/usr/src/linux-headers-${KVER}" M="$PWD" clean modules
           ls -lh yt6801.ko
 
-      - name: Package .deb
+      - name: Package .deb (yt6801-driver_${{ env.KVER }}.deb)
         working-directory: .
-        env:
-          KVER: 6.14.8-2-pve
         run: |
-          mkdir -p pkg/DEBIAN
-          mkdir -p "pkg/lib/modules/$KVER/updates"
-          cp -v src/yt6801.ko "pkg/lib/modules/$KVER/updates/"
+          set -eux
+          PKGDIR=pkg
+          install -d "${PKGDIR}/DEBIAN" "${PKGDIR}/lib/modules/${KVER}/updates"
 
-          cat > pkg/DEBIAN/control <<EOF
+          # Zkopíruj zbuildovaný modul
+          install -m 0644 "src/yt6801.ko" "${PKGDIR}/lib/modules/${KVER}/updates/yt6801.ko"
+
+          # DEBIAN/control
+          cat > "${PKGDIR}/DEBIAN/control" <<EOF
           Package: yt6801-driver
-          Version: $KVER
+          Version: ${KVER}
           Section: kernel
           Priority: optional
           Architecture: amd64
-          Maintainer: $GITHUB_REPOSITORY
-          Description: Motorcomm YT6801 network driver for Proxmox VE 9 ($KVER)
+          Maintainer: ${GITHUB_REPOSITORY}
+          Description: YT6801 (Fuxi GMAC) Ethernet driver module for Proxmox kernel ${KVER}
+          Depends:
           EOF
 
-          cat > pkg/DEBIAN/postinst <<'EOF'
+          # Postinst: zaregistruj modul a přegeneruj moduly
+          cat > "${PKGDIR}/DEBIAN/postinst" <<'EOF'
           #!/bin/sh
           set -e
-          KVER="6.14.8-2-pve"
-          /sbin/depmod -a "$KVER" || true
-          grep -qxF yt6801 /etc/modules 2>/dev/null || echo yt6801 >> /etc/modules
-          modprobe yt6801 2>/dev/null || true
+          KVER="$(dpkg-deb --info "$0" 2>/dev/null | sed -n 's/^ Version: //p')"
+          # Pokud dpkg-deb není k dispozici v tomto kontextu, použij uložený název balíčku:
+          if [ -z "$KVER" ]; then KVER="$(basename "$(dpkg -s yt6801-driver 2>/dev/null | sed -n 's/^Version: //p')")"; fi
+          # Fallback: pokud by to selhalo, vytáhni ze skutečné cesty instalace:
+          [ -z "$KVER" ] && KVER="$(ls -1 /lib/modules | grep pve | sort -V | tail -n1)"
+
+          # Zapiš modul do /etc/modules, pokud tam není
+          if ! grep -q '^yt6801$' /etc/modules 2>/dev/null; then
+            echo yt6801 >> /etc/modules
+          fi
+
+          # Přegeneruj moduly pro běžící jádro i cílové KVER
+          depmod -a || true
+          [ -n "$KVER" ] && depmod -a "$KVER" || true
+
           exit 0
           EOF
-          chmod 0755 pkg/DEBIAN/postinst
+          chmod 0755 "${PKGDIR}/DEBIAN/postinst"
 
-          cat > pkg/DEBIAN/prerm <<'EOF'
+          # Postrm: úklid
+          cat > "${PKGDIR}/DEBIAN/postrm" <<'EOF'
           #!/bin/sh
           set -e
-          modprobe -r yt6801 2>/dev/null || true
+          # necháme /etc/modules s yt6801, aby po případné reinstalaci zůstal
           exit 0
           EOF
-          chmod 0755 pkg/DEBIAN/prerm
+          chmod 0755 "${PKGDIR}/DEBIAN/postrm"
 
-          dpkg-deb --build pkg "yt6801-driver_${KVER}_amd64.deb"
-          ls -lh "yt6801-driver_${KVER}_amd64.deb"
+          dpkg-deb --build "${PKGDIR}" "yt6801-driver_${KVER}.deb"
+          ls -lh "yt6801-driver_${KVER}.deb"
 
-      - name: Upload artifact
+      - name: Upload artifact (.deb)
         uses: actions/upload-artifact@v4
         with:
-          name: yt6801-driver_6.14.8-2-pve_amd64
-          path: ./yt6801-driver_6.14.8-2-pve_amd64.deb
+          name: yt6801-driver_${{ env.KVER }}
+          path: yt6801-driver_${{ env.KVER }}.deb
+          if-no-files-found: error
