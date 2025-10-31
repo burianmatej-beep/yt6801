@@ -7,32 +7,35 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout source (yt6801 driver repo)
+      - name: Checkout yt6801 source
         uses: actions/checkout@v4
 
-      - name: Install build toolchain (Ubuntu, no extra repos)
+      - name: Toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git dkms ca-certificates curl
 
-      - name: Download Proxmox headers 6.14.8-2-pve (.deb)
+      - name: Get Proxmox headers (6.14.8-2-pve) without adding repos
         run: |
           set -euxo pipefail
           KVER="6.14.8-2-pve"
-          HDR_DEB="pve-headers-${KVER}_6.14.8-2_amd64.deb"
-          # Přímý download bez přidávání repozitářů:
-          curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/${HDR_DEB}"
-          sudo dpkg -i "${HDR_DEB}" || true
-          # Doinstaluj případné chybějící závislosti z Ubuntu (bez Debian/Proxmox rep):
-          sudo apt-get -y -f install
-          # Vytvoř /lib/modules/<KVER>/build → headers
+          cd /tmp
+
+          # stáhni přesné .deb balíčky přímo z Proxmox poolu
+          curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/proxmox-headers-6.14_6.14.8-2_all.deb"
+          curl -fLO "http://download.proxmox.com/debian/pve/pool/pve-kernel/pve-headers_${KVER}_6.14.8-2_amd64.deb"
+
+          # nainstaluj je lokálně (bez apt repo)
+          sudo dpkg -i proxmox-headers-6.14_6.14.8-2_all.deb pve-headers_${KVER}_6.14.8-2_amd64.deb
+
+          # vytvoř build symlink pro kernel
           sudo mkdir -p "/lib/modules/${KVER}"
           if [ ! -e "/lib/modules/${KVER}/build" ]; then
             sudo ln -s "/usr/src/linux-headers-${KVER}" "/lib/modules/${KVER}/build"
           fi
           ls -l "/lib/modules/${KVER}/build"
 
-      - name: Build yt6801.ko against 6.14.8-2-pve headers
+      - name: Build yt6801.ko against 6.14.8-2-pve
         run: |
           set -euxo pipefail
           KVER="6.14.8-2-pve"
@@ -41,7 +44,7 @@ jobs:
           mkdir -p build-output
           cp -v yt6801.ko build-output/
 
-      - name: Upload artifact (yt6801.ko)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: yt6801-ko-6.14.8-2-pve
